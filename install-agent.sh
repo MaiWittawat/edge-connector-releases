@@ -3,8 +3,9 @@
 # fetch the cloudcentric-agent release from the release tree (cc-release),
 # verify its sha256 AND its Ed25519 release signature before anything on the
 # machine changes, install it under /opt/cloudcentric, enroll the host once,
-# and run it as a systemd service — rolling back by itself if a new version
-# does not stay up.
+# and run it as a service — systemd on Linux, launchd on macOS — rolling back
+# by itself if a new version does not stay up. The build for this machine's
+# OS and CPU (uname) is picked by itself: <version>/<os>_<arch>/manifest.json.
 #
 #   curl -fsSL https://raw.githubusercontent.com/MaiWittawat/edge-connector-releases/main/install-agent.sh | sudo sh -s -- \
 #        --token cce1.host_… --server crm.example.com:443
@@ -23,7 +24,8 @@
 #   /opt/cloudcentric/bin/cloudcentric-agent -> ../agent/current/bin/cloudcentric-agent
 #   /opt/cloudcentric/etc/agent.yaml                          server, trust, releases (0600; never overwritten)
 #   /opt/cloudcentric/etc/host.identity.json                  the host's key (0600; kept on upgrade/uninstall)
-#   /etc/systemd/system/cloudcentric-agent.service
+#   /etc/systemd/system/cloudcentric-agent.service             Linux
+#   /Library/LaunchDaemons/com.cloudcentric.agent.plist        macOS (log: /var/log/cloudcentric-agent.log)
 #
 # Trust chain (what makes a download installable):
 #   1. this script — fetched over HTTPS from the release host; the release
@@ -119,15 +121,33 @@ x86_64|amd64) ARCH=amd64 ;;
 aarch64|arm64) ARCH=arm64 ;;
 *) die "unsupported CPU: $(uname -m)" ;;
 esac
-[ "$OS" = linux ] || die "this installer supports Linux with systemd (this is $OS)"
-command -v systemctl >/dev/null 2>&1 || die "systemd is required (systemctl not found)"
+case "$OS" in
+linux) command -v systemctl >/dev/null 2>&1 || die "systemd is required (systemctl not found)" ;;
+darwin) command -v launchctl >/dev/null 2>&1 || die "launchctl not found" ;;
+*) die "this installer supports Linux (systemd) and macOS (launchd) — this is $OS" ;;
+esac
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
 
 BIN="$ROOT/bin/$NAME"
 REL="$ROOT/agent"
 ETC="$ROOT/etc"
 CFG="$ETC/agent.yaml"
-UNIT="/etc/systemd/system/$NAME.service"
+UNIT="/etc/systemd/system/$NAME.service"          # linux
+LABEL=com.cloudcentric.agent                        # darwin
+PLIST="/Library/LaunchDaemons/$LABEL.plist"
+MACLOG="/var/log/$NAME.log"
+NEWSYSLOG="/etc/newsyslog.d/$NAME.conf"
+if [ "$OS" = darwin ]; then LOGHINT="tail -f $MACLOG"; else LOGHINT="journalctl -u $NAME -f"; fi
+
+# launchd: `launchctl print` fails = not loaded; its "state" / "runs" lines otherwise
+lc_print() { launchctl print "system/$LABEL" 2>/dev/null; }
+lc_field() { lc_print | sed -n "s/^[[:space:]]*$1 = \(.*\)\$/\1/p" | head -n 1; }
+lc_stop() { # bootout = SIGTERM, the agent drains its plugins; wait until launchd has let go of it
+	lc_print >/dev/null || return 0
+	launchctl bootout "system/$LABEL" 2>/dev/null || true
+	i=0
+	while lc_print >/dev/null && [ $i -lt 200 ]; do sleep 1; i=$((i + 1)); done
+}
 
 # ── uninstall ────────────────────────────────────────────────
 if [ "$UNINSTALL" = 1 ]; then
@@ -137,7 +157,10 @@ if [ "$UNINSTALL" = 1 ]; then
 	else
 		warn "$BIN not found — removing what is left"
 	fi
-	if [ -f "$UNIT" ]; then
+	if [ "$OS" = darwin ]; then
+		lc_stop
+		rm -f "$PLIST" "$NEWSYSLOG"
+	elif [ -f "$UNIT" ]; then
 		systemctl disable --now "$NAME" >/dev/null 2>&1 || true
 		rm -f "$UNIT"
 		systemctl daemon-reload
@@ -208,7 +231,13 @@ for kv in $ALLKEYS; do
 	if [ -z "$PUB" ] && [ "${kv%%=*}" = "$A_KID" ]; then PUB=${kv#*=}; fi
 done
 
-openssl3() { case "$(openssl version 2>/dev/null)" in "OpenSSL "[3-9]*) return 0 ;; esac; return 1; }
+# OpenSSL >= 3: the one on PATH, else Homebrew's (macOS ships LibreSSL, and sudo's PATH has no brew)
+OPENSSL=""
+for o in openssl /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do
+	case "$("$o" version 2>/dev/null)" in "OpenSSL "[3-9]*) OPENSSL=$o; break ;; esac
+done
+openssl3() { [ -n "$OPENSSL" ]; }
+if [ "$OS" = darwin ]; then GETSSL="brew install openssl@3"; else GETSSL="apt install openssl"; fi
 verify_openssl() {
 	[ -n "$A_SIG" ] && [ -n "$A_KID" ] || die "the release is not signed — not installing"
 	[ -n "$PUB" ] || die "the release is signed with key '$A_KID', which this installer does not trust (--trusted-key $A_KID=…) — not installing"
@@ -217,11 +246,11 @@ verify_openssl() {
 	*) SPKI="MCowBQYDK2VwAyEA$PUB" ;;  # raw 32 bytes: the 12-byte Ed25519 SPKI header, base64 joins cleanly
 	esac
 	printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$SPKI" >"$TMP/pub.pem"
-	printf '%s' "$A_SIG" | openssl base64 -d -A >"$TMP/sig" || die "signature is not base64"
+	printf '%s' "$A_SIG" | "$OPENSSL" base64 -d -A >"$TMP/sig" || die "signature is not base64"
 	printf 'cc-artifact:%s:%s:%s:%s:%s' "$NAME" "$VERSION" "$OS" "$ARCH" "$A_SHA" >"$TMP/msg"
-	openssl pkeyutl -verify -pubin -inkey "$TMP/pub.pem" -rawin -in "$TMP/msg" -sigfile "$TMP/sig" >/dev/null 2>&1 \
+	"$OPENSSL" pkeyutl -verify -pubin -inkey "$TMP/pub.pem" -rawin -in "$TMP/msg" -sigfile "$TMP/sig" >/dev/null 2>&1 \
 		|| die "BAD SIGNATURE on $NAME $VERSION (key $A_KID) — not installing"
-	say "signature ok (key $A_KID, checked with $(openssl version | cut -d' ' -f1,2))"
+	say "signature ok (key $A_KID, checked with $("$OPENSSL" version | cut -d' ' -f1,2))"
 }
 verify_agent() { # the agent already installed here — trusted since it was installed
 	set --
@@ -239,7 +268,7 @@ else
 	auto)
 		if openssl3; then verify_openssl
 		elif [ -x "$BIN" ] && "$BIN" verify --help >/dev/null 2>&1; then verify_agent
-		else die "cannot check the release signature: install OpenSSL 3 (apt install openssl), or pass --insecure-skip-signature"
+		else die "cannot check the release signature: install OpenSSL 3 ($GETSSL), or pass --insecure-skip-signature"
 		fi ;;
 	esac
 fi
@@ -324,6 +353,7 @@ prune() { # keep the newest 3 versions plus the running and the previous one
 	done
 }
 
+if [ "$OS" = linux ]; then
 # mirrors agent/packaging/systemd/cloudcentric-agent.service
 cat >"$UNIT.tmp" <<EOF
 # $NAME — the CloudCentric edge host supervisor. Installed by install-agent.sh.
@@ -365,14 +395,67 @@ EOF
 mv "$UNIT.tmp" "$UNIT"
 systemctl daemon-reload
 systemctl enable "$NAME" >/dev/null 2>&1
+else
+# mirrors agent/packaging/launchd/com.cloudcentric.agent.plist
+cat >"$PLIST.tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- $NAME — the CloudCentric edge host supervisor. Installed by install-agent.sh. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>if [ -f '$ETC/agent.env' ]; then set -a; . '$ETC/agent.env'; set +a; fi; exec '$BIN' run</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict><key>CC_ROOT</key><string>$ROOT</string></dict>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ThrottleInterval</key><integer>10</integer>
+	<key>ExitTimeOut</key><integer>180</integer>
+	<key>Umask</key><integer>63</integer>
+	<key>SoftResourceLimits</key>
+	<dict><key>NumberOfFiles</key><integer>10240</integer></dict>
+	<key>StandardOutPath</key><string>$MACLOG</string>
+	<key>StandardErrorPath</key><string>$MACLOG</string>
+</dict>
+</plist>
+EOF
+plutil -lint "$PLIST.tmp" >/dev/null || die "the launchd plist does not validate"
+chown 0:0 "$PLIST.tmp"
+chmod 644 "$PLIST.tmp"
+mv "$PLIST.tmp" "$PLIST"
+# rotate the log: at 10 MB, 7 kept, bzip2 (N: no signal — launchd reopens it for the next run)
+printf '# logfilename [owner:group] mode count size when flags\n%s root:wheel 640 7 10240 * NJ\n' "$MACLOG" >"$NEWSYSLOG"
+fi
 
-healthy() { # active, not restarted during the wait, and answering on its control socket
+svc_restart() {
+	if [ "$OS" = linux ]; then systemctl restart "$NAME"; return; fi
+	lc_stop
+	launchctl enable "system/$LABEL" 2>/dev/null || true
+	launchctl bootstrap system "$PLIST"
+}
+svc_runs() { if [ "$OS" = linux ]; then systemctl show -p NRestarts --value "$NAME"; else lc_field runs; fi; }
+svc_up() {
+	if [ "$OS" = linux ]; then [ "$(systemctl is-active "$NAME")" = active ]
+	else [ "$(lc_field state)" = running ]; fi
+}
+svc_logs() {
+	if [ "$OS" = linux ]; then journalctl -u "$NAME" -n 20 --no-pager 2>/dev/null || true
+	else tail -n 20 "$MACLOG" 2>/dev/null || true; fi
+}
+svc_stop() { if [ "$OS" = linux ]; then systemctl stop "$NAME" || true; else lc_stop; fi; }
+
+healthy() { # up, not restarted during the wait, and answering on its control socket
 	sleep 1
-	r0=$(systemctl show -p NRestarts --value "$NAME")
+	r0=$(svc_runs)
 	i=0
 	while [ $i -lt "$HEALTH_WAIT" ]; do
-		[ "$(systemctl is-active "$NAME")" = active ] || return 1
-		[ "$(systemctl show -p NRestarts --value "$NAME")" = "$r0" ] || return 1
+		svc_up || return 1
+		[ "$(svc_runs)" = "$r0" ] || return 1
 		sleep 1; i=$((i + 1))
 	done
 	"$BIN" status --root "$ROOT" --json >"$TMP/status.json" 2>/dev/null || return 1
@@ -382,23 +465,23 @@ healthy() { # active, not restarted during the wait, and answering on its contro
 relink "$VERSION" "$REL/current"
 relink "../agent/current/bin/$NAME" "$BIN"
 say "starting $NAME $VERSION"
-systemctl restart "$NAME"
+svc_restart || true
 if healthy; then
 	prune
 	CONN=$(jget connection "$TMP/status.json")
 	HOST=$(jget host_id "$TMP/status.json")
 	[ "$CONN" = connected ] || warn "the agent runs but is not connected to the CRM yet ($CONN) — see: $NAME doctor"
-	say "$NAME $VERSION is running — host ${HOST:-?}, $CONN (journalctl -u $NAME -f · $NAME status)"
+	say "$NAME $VERSION is running — host ${HOST:-?}, $CONN ($LOGHINT · $NAME status)"
 	exit 0
 fi
 
-journalctl -u "$NAME" -n 20 --no-pager 2>/dev/null || true
+svc_logs
 if [ -n "$PREV" ] && [ "$PREV" != "$VERSION" ] && [ -d "$REL/$PREV" ]; then
 	warn "$NAME $VERSION did not stay up — rolling back to $PREV"
 	relink "$PREV" "$REL/current"
-	systemctl restart "$NAME"
+	svc_restart || true
 	if healthy; then die "upgrade to $VERSION failed; $PREV is running again"; fi
-	die "upgrade to $VERSION failed and $PREV does not stay up either — see journalctl -u $NAME"
+	die "upgrade to $VERSION failed and $PREV does not stay up either — see: $LOGHINT"
 fi
-systemctl stop "$NAME" || true
-die "$NAME $VERSION does not stay up — see journalctl -u $NAME and: $BIN doctor"
+svc_stop
+die "$NAME $VERSION does not stay up — see: $LOGHINT and: $BIN doctor"

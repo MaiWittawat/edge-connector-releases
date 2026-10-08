@@ -1,0 +1,19 @@
+{
+  "name": "cloudcentric-agent",
+  "version": "0.5.0",
+  "type": "agent",
+  "os": "linux",
+  "arch": "amd64",
+  "artifact": {
+    "url": "https://raw.githubusercontent.com/MaiWittawat/edge-connector-releases/main/cloudcentric-agent/0.5.0/linux_amd64/cloudcentric-agent_0.5.0_linux_amd64.tar.gz",
+    "sha256": "aa121e5d71e81265086e56213de5ce319336d7ae95741925f24c78b183910c05",
+    "signature": "5/yhWYkfGOEvyMSM8d05xAG2UE7uMrcpUV3y4dOOjpBSHSPVIskLedHXTj3O82YrGCBPlwc6gR8Ob3c02ekOAA==",
+    "keyId": "release-2026",
+    "size": "5858674"
+  },
+  "health": {
+    "type": "process",
+    "startTimeoutSec": 60
+  },
+  "drainTimeoutSec": 30
+}
