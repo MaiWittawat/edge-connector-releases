@@ -1,0 +1,19 @@
+{
+  "name": "cloudcentric-agent",
+  "version": "0.6.0",
+  "type": "agent",
+  "os": "darwin",
+  "arch": "arm64",
+  "artifact": {
+    "url": "https://raw.githubusercontent.com/MaiWittawat/edge-connector-releases/main/cloudcentric-agent/0.6.0/darwin_arm64/cloudcentric-agent_0.6.0_darwin_arm64.tar.gz",
+    "sha256": "b49f097e913a32c978f417002fa80c76c0eefcb6d72d0ca16ee50aabc541457f",
+    "signature": "FZMbeJtaldCXuVDYTcJzv2GUAn6xffhVik+EkA7RFg/RyMvGOeVCvfUb8zXC7BMdZdBtO4KtdalrOkcv9R2mDw==",
+    "keyId": "release-2026",
+    "size": "5543078"
+  },
+  "health": {
+    "type": "process",
+    "startTimeoutSec": 60
+  },
+  "drainTimeoutSec": 30
+}
