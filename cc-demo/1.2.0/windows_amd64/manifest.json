@@ -1,0 +1,22 @@
+{
+  "name": "cc-demo",
+  "version": "1.2.0",
+  "type": "demo",
+  "os": "windows",
+  "arch": "amd64",
+  "artifact": {
+    "url": "https://raw.githubusercontent.com/MaiWittawat/edge-connector-releases/main/cc-demo/1.2.0/windows_amd64/cc-demo_1.2.0_windows_amd64.tar.gz",
+    "sha256": "586707573c582f8c028a8c2f5bedef89c47343d33e83ee1ec6f769849324f052",
+    "signature": "O3VLpILyPfHd8jkd5naaDspykAci5P1shB7zAzBAwh9OpEkoYpkxmlONZtIf+EpHdAqNTT+vMHsQlvMgiU96BA==",
+    "keyId": "release-2026",
+    "size": "5174477"
+  },
+  "health": {
+    "type": "unix_socket",
+    "startTimeoutSec": 30
+  },
+  "drainTimeoutSec": 10,
+  "scopes": [
+    "calls:write"
+  ]
+}
