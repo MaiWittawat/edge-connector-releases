@@ -1,0 +1,22 @@
+{
+  "name": "cc-demo",
+  "version": "1.1.0",
+  "type": "demo",
+  "os": "darwin",
+  "arch": "arm64",
+  "artifact": {
+    "url": "https://raw.githubusercontent.com/MaiWittawat/edge-connector-releases/main/cc-demo/1.1.0/darwin_arm64/cc-demo_1.1.0_darwin_arm64.tar.gz",
+    "sha256": "c3aca830f3a6f2d1e736814768545c0f120245b73c0d411cc839f4a021347fc4",
+    "signature": "pluyGbKeh+gNR2jYm8GXt2IGHGaVUpCbuoszNxqpR+itrsyL1OJvO3YbUs8kWQoqdB0Rc4W4hBrZW+x2KapNDQ==",
+    "keyId": "release-2026",
+    "size": "4828687"
+  },
+  "health": {
+    "type": "unix_socket",
+    "startTimeoutSec": 30
+  },
+  "drainTimeoutSec": 10,
+  "scopes": [
+    "calls:write"
+  ]
+}
